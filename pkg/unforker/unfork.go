@@ -83,7 +83,7 @@ func Unfork(localChart *LocalChart, upstreamChartMatch chartindex.ChartMatch) (s
 
 	// Unfork the content in forkedRoot from the base in the pull.  this will extract patches
 	// write them to downstreams/unforked
-	resources, patches, err := createPatches(forkedRoot, path.Join(unforkPath, "base"))
+	resources, patches, namePatches, err := createPatches(forkedRoot, path.Join(unforkPath, "base"))
 	if err != nil {
 		return "", errors.Wrap(err, "faield to create patches")
 	}
@@ -91,6 +91,7 @@ func Unfork(localChart *LocalChart, upstreamChartMatch chartindex.ChartMatch) (s
 	unforkPatchDir := path.Join(unforkPath, "overlays", "downstreams", "unforked")
 	patchesForKustomization := []string{}
 	resourcesForKustomization := []string{}
+	jsonPatchesForKustomization := []kustomizetypes.PatchJson6902{}
 
 	for filename, content := range resources {
 		filePath := path.Join(unforkPatchDir, filename)
@@ -124,6 +125,24 @@ func Unfork(localChart *LocalChart, upstreamChartMatch chartindex.ChartMatch) (s
 		patchesForKustomization = append(patchesForKustomization, f)
 	}
 
+	for _, namepatch := range namePatches {
+		patchName := fmt.Sprintf("%s-%s.json", namepatch.PatchTarget.Target.Name, namepatch.PatchTarget.Target.Kind)
+		filePath := path.Join(unforkPatchDir, patchName)
+		d, f := path.Split(filePath)
+		if _, err := os.Stat(d); os.IsNotExist(err) {
+			if err := os.MkdirAll(d, 0755); err != nil {
+				return "", errors.Wrap(err, "failed to make dir")
+			}
+		}
+
+		if err := ioutil.WriteFile(filePath, []byte(namepatch.PatchJson), 0644); err != nil {
+			return "", errors.Wrap(err, "failed to write json patch")
+		}
+
+		namepatch.PatchTarget.Path = f
+		jsonPatchesForKustomization = append(jsonPatchesForKustomization, namepatch.PatchTarget)
+	}
+
 	k, err := kotsk8sutil.ReadKustomizationFromFile(path.Join(unforkPatchDir, "kustomization.yaml"))
 	if err != nil {
 		return "", errors.Wrap(err, "failed to read kustomization")
@@ -132,9 +151,9 @@ func Unfork(localChart *LocalChart, upstreamChartMatch chartindex.ChartMatch) (s
 	for _, f := range patchesForKustomization {
 		k.PatchesStrategicMerge = append(k.PatchesStrategicMerge, kustomizetypes.PatchStrategicMerge(f))
 	}
-	for _, r := range resourcesForKustomization {
-		k.Resources = append(k.Resources, r)
-	}
+	k.Resources = append(k.Resources, resourcesForKustomization...)
+	k.PatchesJson6902 = append(k.PatchesJson6902, jsonPatchesForKustomization...)
+
 	if err := kotsk8sutil.WriteKustomizationToFile(k, path.Join(unforkPatchDir, "kustomization.yaml")); err != nil {
 		return "", errors.Wrap(err, "failed to write kustomization")
 	}
